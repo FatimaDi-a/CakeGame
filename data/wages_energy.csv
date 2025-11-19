@@ -1,0 +1,7 @@
+parameter,value
+prep_wage_usd_per_hour,4
+oven_wage_usd_per_hour,5
+package_wage_usd_per_hour,3.5
+electricity_price_usd_per_kWh,0.35
+oven_power_kW,4
+oven_rental_wage_usd_per_hour,4.4
