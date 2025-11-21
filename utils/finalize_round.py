@@ -168,7 +168,10 @@ def finalize_round(round_number: int):
     recipes_data = supabase.table("recipes").select("*").execute().data
     recipes_df = pd.DataFrame(recipes_data or [])
     recipes_df.columns = [c.lower() for c in recipes_df.columns]
-
+    # Load packaging costs
+    cakes_resp = supabase.table("cakes").select("name, packaging_cost_per_unit_usd").execute()
+    cakes_df = pd.DataFrame(cakes_resp.data or [])
+    packaging_map = dict(zip(cakes_df["name"], cakes_df["packaging_cost_per_unit_usd"]))
     # === Helper: ingredient requirements ===
     def compute_required_ingredients(plan_json):
         if not plan_json or recipes_df.empty:
@@ -229,7 +232,7 @@ def finalize_round(round_number: int):
             for item in plan_json:
                 cake = item["cake"]
                 channel = item["channel"]
-                qty = float(item["qty"])
+                qty = int(item["qty"])
 
                 my_price = float(
                     team_prices[
@@ -249,15 +252,16 @@ def finalize_round(round_number: int):
                 alpha, beta, gamma = params["alpha"].iloc[0], params["beta"].iloc[0], params["gamma_competition"].iloc[0]
                 avg_p = avg_price.get((channel, cake), my_price)
 
-                demand = max(0, alpha - beta * my_price + gamma * (avg_p - my_price))
+                demand = int(alpha - beta * my_price + gamma * (avg_p - my_price))
+                demand = max(0,demand)
                 demand = int(demand)
                 qty = int(qty)
                 sold = min(qty, demand)
 
                 revenue = sold * my_price
                 transport = sold * ch_map.get(channel, 0)
-
-                total_profit += revenue - transport
+                packaging_cost = sold * float(packaging_map.get(cake, 0))
+                total_profit += revenue - transport - packaging_cost
                 total_transport += transport
 
             # Update team financials

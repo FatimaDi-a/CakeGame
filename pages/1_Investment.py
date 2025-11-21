@@ -296,7 +296,7 @@ if "last_save_time" not in st.session_state:
     st.session_state.last_save_time = None
 
 
-COOLDOWN_SECONDS = 20
+COOLDOWN_SECONDS = 30
 
 def save_on_cooldown():
     last = st.session_state.last_save_time
