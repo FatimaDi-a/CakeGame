@@ -17,26 +17,6 @@ import pytz
 BEIRUT_TZ = pytz.timezone("Asia/Beirut")
 
 
-
-# ============================
-# 🧁 PAGE HEADER
-# ============================
-st.set_page_config(page_title="Investments", page_icon="💰", layout="wide")
-
-# =====================================
-# 🔒 LOGIN CHECK
-# =====================================
-if "logged_in" not in st.session_state or not st.session_state.logged_in:
-    st.warning("Please log in first.")
-    st.stop()
-
-# ❌ Specific real-world calendar dates when the game is closed
-CLOSED_DATES = []
-today = datetime.now(BEIRUT_TZ).date()
-if today.isoformat() in CLOSED_DATES:
-    st.warning(f"🚫 The game is closed today ({today}). Please come back tomorrow!")
-    st.stop()
-
 # =====================================
 # 🌍 SUPABASE SETUP
 # =====================================
@@ -50,6 +30,24 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.stop()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ============================
+# 🧁 PAGE HEADER
+# ============================
+st.set_page_config(page_title="Investments", page_icon="💰", layout="wide")
+
+# =====================================
+# 🔒 LOGIN CHECK
+# =====================================
+if "logged_in" not in st.session_state or not st.session_state.logged_in:
+    st.warning("Please log in first.")
+    st.stop()
+
+if "investment_saved" not in st.session_state:
+    st.session_state.investment_saved = False
+
+
+
 
 def get_current_round():
     response = supabase.table("game_state").select("value").eq("key", "current_round").maybe_single().execute()
@@ -578,33 +576,15 @@ col3.metric("Remaining After Purchase", f"${remaining:,.2f}")
 if total_investment > current_balance:
     st.error("⚠️ You exceeded your budget! Please adjust your quantities.")
 else:
-    if "confirm_investment" not in st.session_state:
-        st.session_state.confirm_investment = False
+    
     if submissions_locked(supabase):
         st.error("🚫 Submissions are locked by the instructor.")
     else:
-
-        if st.button("💾 Save Investment"):
-            if total_investment == 0:
-                st.warning("⚠️ Please enter some investment before saving.")
-            else:
-                st.session_state.confirm_investment = True
-                st.rerun()
-    
-        if st.session_state.confirm_investment:
-            st.warning("⚠️ Are you sure you want to save these investment decisions?")
-            col1, col2 = st.columns(2)
-            cooling, remaining = save_on_cooldown()
-            if cooling:
-                st.warning(f"⏳ Please wait {remaining} seconds before saving again.")
-                yes_disabled = True
-            else:
-                yes_disabled = False
-            with col1:
-                if st.button("✅ Yes, save now", disabled=yes_disabled):
-                    st.session_state.confirm_investment = False
-                    st.session_state.last_save_time = datetime.now()
-
+        if not st.session_state.investment_saved:
+            if st.button("💾 Save Investment"):  
+                if total_investment == 0:
+                    st.warning("⚠️ Please enter some investment before saving.")
+                else:
                     try:
                         # 2️⃣ Insert investment record
                         payload = {
@@ -691,6 +671,7 @@ else:
                         st.session_state.stock_value = new_stock
     
                         st.success("✅ Investment saved successfully!")
+                        st.session_state.investment_saved = True
                         st.rerun()
                         
     
@@ -698,11 +679,8 @@ else:
                         st.error("❌ Failed to save investment.")
                         st.exception(e)
     
-            with col2:
-                if st.button("❌ Cancel"):
-                    st.session_state.confirm_investment = False
-                    st.info("Investment save cancelled.")
-                    st.rerun()
+        else:
+            st.info("💾 Investment already saved. Refresh the page to save again.")
 
 
 

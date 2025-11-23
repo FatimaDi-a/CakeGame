@@ -771,9 +771,10 @@ if st.session_state.confirm_submit:
                 
                     if round_number == 1:
                         D = max(0, alpha - beta * my_price)
+                        D = int(D)
                     else:
                         D = max(0, alpha - beta * my_price + gamma * (avg_other - my_price))
-                
+                        D = int(D)
                     demand_results.append({
                         "cake": cake,
                         "channel": channel,
