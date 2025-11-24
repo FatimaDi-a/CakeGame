@@ -576,17 +576,12 @@ col3.metric("Remaining After Purchase", f"${remaining:,.2f}")
 # ================================
 if "saving_investment" not in st.session_state:
     st.session_state.saving_investment = False
-if "investment_saved" not in st.session_state:
-    st.session_state.investment_saved = False
 
 
 # ================================
 # RENDER SAVE BUTTON
 # ================================
-button_disabled = (
-    st.session_state.saving_investment or 
-    st.session_state.investment_saved
-)
+button_disabled = st.session_state.saving_investment
 
 if st.button("💾 Save Investment", disabled=button_disabled):
     if total_investment == 0:
@@ -599,7 +594,7 @@ if st.button("💾 Save Investment", disabled=button_disabled):
 # ================================
 # PROCESS SAVE AFTER RERUN
 # ================================
-if st.session_state.saving_investment and not st.session_state.investment_saved:
+if st.session_state.saving_investment:
     try:
         supabase.rpc(
             "save_investment_atomic",
@@ -612,7 +607,7 @@ if st.session_state.saving_investment and not st.session_state.investment_saved:
             }
         ).execute()
 
-        st.session_state.investment_saved = True
+        # Reset the saving flag so button becomes active again
         st.session_state.saving_investment = False
 
         st.success("✅ Investment saved successfully!")
@@ -622,13 +617,6 @@ if st.session_state.saving_investment and not st.session_state.investment_saved:
         st.session_state.saving_investment = False
         st.error("❌ Failed to save investment.")
         st.exception(e)
-
-
-# ================================
-# ALREADY SAVED MESSAGE
-# ================================
-if st.session_state.investment_saved:
-    st.info("💾 Investment already saved. Refresh the page to save again.")
 
 
 # ============================
