@@ -451,7 +451,14 @@ def get_json(table, round_num):
     if resp.data:
         raw = resp.data[0]
         key = "prices_json" if table == "prices" else "demands_json"
-        return pd.DataFrame(json.loads(raw.get(key, "[]")))
+        val = raw.get(key, [])
+
+        # Fix: handle decoded JSON
+        if isinstance(val, str):
+            val = json.loads(val)
+
+        return pd.DataFrame(val)
+
     return pd.DataFrame()
 
 
