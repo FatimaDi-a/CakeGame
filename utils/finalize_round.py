@@ -28,15 +28,15 @@ def finalize_round(round_number: int):
         return
 
     print(f"📅 Finalizing Round {round_number}")
+
     # =====================================================================
     # 🔄 Ensure all teams have a price entry for the current round
     # =====================================================================
     all_teams = supabase.table("teams").select("team_name").execute().data or []
-    
+
     for row in all_teams:
         team = row["team_name"]
-    
-        # Does the team have a price row for the current round?
+
         current_price = (
             supabase.table("prices")
             .select("*")
@@ -52,7 +52,7 @@ def finalize_round(round_number: int):
         )
         if has_current_price:
             continue
-    
+
         # Find most recent earlier round
         prev_price = (
             supabase.table("prices")
@@ -64,24 +64,22 @@ def finalize_round(round_number: int):
             .execute()
             .data
         )
-    
+
         if prev_price:
             last = prev_price[0]
-    
-            # Insert copy as new price row for current round
+
             supabase.table("prices").insert({
                 "team_name": team,
                 "prices_json": last["prices_json"],
                 "round_number": round_number,
-                "finalized": True,            # treat as final
-                "auto_filled": True,          # mark as carried forward
+                "finalized": True,
+                "auto_filled": True,
                 "copied_from_round": last["round_number"]
             }).execute()
-    
+
             print(f"🔁 Auto-filled prices for {team} from Round {last['round_number']} → Round {round_number}")
-    
+
         else:
-            # No history at all → insert an empty record
             supabase.table("prices").insert({
                 "team_name": team,
                 "prices_json": "[]",
@@ -90,41 +88,44 @@ def finalize_round(round_number: int):
                 "auto_filled": True,
                 "copied_from_round": None
             }).execute()
-    
+
             print(f"⚠️ {team} has no prior prices — inserted empty price list.")
 
     # === LOAD DATA FOR THIS ROUND ===
 
-    # Production Plans for this round
     plans_resp = supabase.table("production_plans").select("*").eq("round_number", round_number).execute()
     plans_df = pd.DataFrame(plans_resp.data or [])
 
+    # === Build map of cakes produced this round ===
+    team_producing_map = {}
+    if not plans_df.empty:
+        for _, row in plans_df.iterrows():
+            team = row["team_name"]
+            raw_plan = row["plan_json"]
+            plan_json = json.loads(raw_plan) if isinstance(raw_plan, str) else raw_plan or []
+            cakes = {item["cake"] for item in plan_json}
+            team_producing_map[team] = cakes
 
-    # === Load latest submitted prices per team (fallback logic) ===
+    # === Load latest submitted prices per team ===
     price_history_resp = supabase.table("prices") \
         .select("*") \
         .lte("round_number", round_number) \
         .order("round_number", desc=True) \
         .execute()
-    
+
     price_history = price_history_resp.data or []
     if price_history:
-        # Keep only the LAST submitted row per team
         latest_price_per_team = {}
         for row in price_history:
             team_name = row["team_name"]
             if team_name not in latest_price_per_team:
                 latest_price_per_team[team_name] = row
-    
-        # Flatten JSON into usable rows
+
+        # Flatten JSON
         price_rows = []
         for rec in latest_price_per_team.values():
             prices_raw = rec.get("prices_json", [])
-            if isinstance(prices_raw, str):
-                prices_list = json.loads(prices_raw)
-            else:
-                prices_list = prices_raw
-            
+            prices_list = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
             for item in prices_list:
                 price_rows.append({
                     "team_name": rec["team_name"],
@@ -133,31 +134,45 @@ def finalize_round(round_number: int):
                     "price_usd": item["price_usd"],
                     "round_used": rec["round_number"]
                 })
-    
+
         price_df = pd.DataFrame(price_rows)
     else:
         price_df = pd.DataFrame()
 
-    # Demand parameters
-    demand_params = pd.read_csv(
-        os.path.join(os.path.dirname(__file__), "..", "data", "instructor_demand_competition.csv")
-    )
+    # === Compute avg_price using only producing teams ===
+    if not price_df.empty:
+        price_df_filtered = []
+        for _, row in price_df.iterrows():
+            team = row["team_name"]
+            cake = row["cake"]
 
-    # Channels (transport cost)
+            # Keep only if team produces that cake this round
+            if team in team_producing_map and cake in team_producing_map[team]:
+                price_df_filtered.append(row)
+
+        price_df_filtered = pd.DataFrame(price_df_filtered)
+
+        if not price_df_filtered.empty:
+            avg_price = (
+                price_df_filtered.groupby(["channel", "cake"])["price_usd"]
+                .mean()
+                .to_dict()
+            )
+        else:
+            avg_price = {}
+    else:
+        avg_price = {}
+
+    # Load demand + costs
+    demand_params = pd.read_csv(os.path.join(os.path.dirname(__file__), "..", "data", "instructor_demand_competition.csv"))
     ch_resp = supabase.table("channels").select("channel, transport_cost_per_unit_usd").execute()
     ch_df = pd.DataFrame(ch_resp.data or [])
     ch_map = dict(zip(ch_df["channel"], ch_df["transport_cost_per_unit_usd"]))
 
-    # Ingredients and wages
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
-    ingredients_df = pd.read_csv(os.path.join(data_dir, "ingredients.csv"))
-    wages_df = pd.read_csv(os.path.join(data_dir, "wages_energy.csv"))
+    ingredients_df = pd.read_csv(os.path.join(os.path.dirname(__file__), "..", "data", "ingredients.csv"))
+    wages_df = pd.read_csv(os.path.join(os.path.dirname(__file__), "..", "data", "wages_energy.csv"))
 
-    ing_cost_map = {
-        row["ingredient"].lower(): float(row["unit_cost_usd"])
-        for _, row in ingredients_df.iterrows()
-    }
-
+    ing_cost_map = {row["ingredient"].lower(): float(row["unit_cost_usd"]) for _, row in ingredients_df.iterrows()}
     wage_param_map = {
         "prep": "prep_wage_usd_per_hour",
         "oven": "oven_wage_usd_per_hour",
@@ -170,15 +185,14 @@ def finalize_round(round_number: int):
         if not wages_df[wages_df["parameter"] == param].empty
     }
 
-    # Recipes
     recipes_data = supabase.table("recipes").select("*").execute().data
     recipes_df = pd.DataFrame(recipes_data or [])
     recipes_df.columns = [c.lower() for c in recipes_df.columns]
-    # Load packaging costs
+
     cakes_resp = supabase.table("cakes").select("name, packaging_cost_per_unit_usd").execute()
     cakes_df = pd.DataFrame(cakes_resp.data or [])
     packaging_map = dict(zip(cakes_df["name"], cakes_df["packaging_cost_per_unit_usd"]))
-    # === Helper: ingredient requirements ===
+
     def compute_required_ingredients(plan_json):
         if not plan_json or recipes_df.empty:
             return {}
@@ -200,36 +214,18 @@ def finalize_round(round_number: int):
                 needs[col] = needs.get(col, 0) + usage
         return needs
 
-    if not price_df.empty:
-        avg_price = (
-            price_df.groupby(["channel", "cake"])["price_usd"]
-            .mean()
-            .to_dict()
-        )
-    else:
-        avg_price = {}
     # ============================================================
-    # PROCESS TEAMS WITH PRODUCTION PLANS
+    # PROCESS TEAMS WITH PLANS
     # ============================================================
     if not plans_df.empty:
         for team in plans_df["team_name"].unique():
 
             team_plan = plans_df[plans_df["team_name"] == team].iloc[0]
             raw_plan = team_plan["plan_json"]
-
-            if isinstance(raw_plan, str):
-                plan_json = json.loads(raw_plan)
-            else:
-                plan_json = raw_plan  # Supabase already returned dict/list
+            plan_json = json.loads(raw_plan) if isinstance(raw_plan, str) else raw_plan or []
 
             raw_required = team_plan["required_json"]
-
-            if isinstance(raw_required, str):
-                required_json = json.loads(raw_required)
-            else:
-                required_json = raw_required or {}
-
-
+            required_json = json.loads(raw_required) if isinstance(raw_required, str) else raw_required or {}
 
             team_prices = price_df[price_df["team_name"] == team]
 
@@ -237,31 +233,36 @@ def finalize_round(round_number: int):
             total_transport = 0.0
             total_packaging_cost = 0
 
-            # Ingredient costs
             ing_needs = compute_required_ingredients(plan_json)
-            ing_cost = sum(qty * ing_cost_map.get(ing.lower(), 0)
-                           for ing, qty in ing_needs.items())
+            ing_cost = sum(qty * ing_cost_map.get(ing.lower(), 0) for ing, qty in ing_needs.items())
 
-            # Capacity costs
-            cap_cost = sum(float(hours) * wage_map.get(cap.lower(), 0)
-                           for cap, hours in required_json.items())
-
+            cap_cost = sum(float(hours) * wage_map.get(cap.lower(), 0) for cap, hours in required_json.items())
             total_resource_cost = ing_cost + cap_cost
 
-            # Sales / Profit
+            # ============================================================
+            # SALES & PROFIT CALCULATION
+            # ============================================================
+            cakes_produced = {item["cake"] for item in plan_json}
+
             for item in plan_json:
                 cake = item["cake"]
                 channel = item["channel"]
                 qty = math.floor(item["qty"])
 
-                my_price = float(
-                    team_prices[
-                        (team_prices["cake"] == cake) &
-                        (team_prices["channel"] == channel)
-                    ]["price_usd"].fillna(0).values[0]
-                    if not team_prices.empty else 0
-                )
+                # Determine price logic
+                subset = team_prices[
+                    (team_prices["cake"] == cake) &
+                    (team_prices["channel"] == channel)
+                ]
 
+                if cake not in cakes_produced:
+                    my_price = float(avg_price.get((channel, cake), 0))
+                elif subset.empty:
+                    my_price = float(avg_price.get((channel, cake), 0))
+                else:
+                    my_price = float(subset["price_usd"].iloc[0])
+
+                # Demand model
                 params = demand_params[
                     (demand_params["cake_name"] == cake) &
                     (demand_params["channel"] == channel)
@@ -269,24 +270,23 @@ def finalize_round(round_number: int):
                 if params.empty:
                     continue
 
-                alpha, beta, gamma = params["alpha"].iloc[0], params["beta"].iloc[0], params["gamma_competition"].iloc[0]
+                alpha = params["alpha"].iloc[0]
+                beta = params["beta"].iloc[0]
+                gamma = params["gamma_competition"].iloc[0]
+
                 avg_p = avg_price.get((channel, cake), my_price)
 
-                demand = math.floor(alpha - beta * my_price + gamma * (avg_p - my_price))
-                demand = max(0,demand)
-                demand = math.floor(demand)
-                qty = math.floor(float(item["qty"]))
-
-                sold = min(qty, demand)
+                demand = max(0, math.floor(alpha - beta * my_price + gamma * (avg_p - my_price)))
+                sold = min(math.floor(qty), demand)
 
                 revenue = sold * my_price
                 transport = sold * ch_map.get(channel, 0)
                 packaging_cost = sold * float(packaging_map.get(cake, 0))
+
                 total_profit += revenue - transport - packaging_cost
                 total_transport += transport
                 total_packaging_cost += packaging_cost
 
-            # Update team financials
             team_data = supabase.table("teams").select("money, stock_value").eq("team_name", team).execute().data[0]
 
             new_money = float(team_data["money"]) + total_profit
@@ -304,7 +304,6 @@ def finalize_round(round_number: int):
                 "last_finalized_round": round_number
             }).eq("team_name", team).execute()
 
-            # Update plan profit
             supabase.table("production_plans").update({
                 "profit_usd": total_profit
             }).eq("team_name", team).eq("round_number", round_number).execute()
@@ -329,3 +328,4 @@ def finalize_round(round_number: int):
         }).eq("team_name", team).execute()
 
     print(f"✅ Round {round_number} finalized.")
+
